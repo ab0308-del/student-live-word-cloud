@@ -126,7 +126,115 @@ const css = String.raw`
 `;
 
 const teacherScript = String.raw`
-const $=s=>document.querySelector(s);let pin=sessionStorage.getItem('teacherPin')||'';let state=null;let toastTimer;const showToast=m=>{const t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),2200)};async function call(url,options={}){options.headers={...(options.headers||{}),'content-type':'application/json','x-admin-pin':pin};const r=await fetch(url,options);const data=await r.json().catch(()=>({}));if(!r.ok)throw new Error(data.error||'操作失敗');return data}function draw(data){state=data;$('#question').value=data.question;$('#count').textContent=data.total+' 份回答';$('#openText').textContent=data.isOpen?'正在收件':'已暫停';$('#statusDot').style.background=data.isOpen?'#38b36a':'#ff735d';$('#toggle').classList.toggle('on',data.isOpen);$('#toggle').setAttribute('aria-pressed',String(data.isOpen));const c=$('#cloud');c.innerHTML='';if(!data.words.length){c.innerHTML='<div class="empty"><span class="empty-icon">✦</span>學生送出回答後，文字會即時出現在這裡。<br>相同回答越多，字會越大。</div>';return}const max=Math.max(...data.words.map(w=>w.count));data.words.forEach((w,i)=>{const el=document.createElement('span');el.className='word';el.textContent=w.answer;el.title=w.count+' 人回答';el.style.fontSize=(20+Math.sqrt(w.count/max)*42)+'px';el.style.animationDelay=Math.min(i*.025,.4)+'s';c.appendChild(el)})}async function refresh(){try{draw(await call('/api/state'))}catch(e){showToast(e.message)}}async function unlock(){pin=$('#pin').value.trim();try{await call('/api/state');await call('/api/open',{method:'POST',body:JSON.stringify({isOpen:true})});sessionStorage.setItem('teacherPin',pin);$('#lock').classList.add('hidden');await refresh()}catch(e){showToast('密碼不正確，請再試一次')}}$('#unlock').onclick=unlock;$('#pin').addEventListener('keydown',e=>{if(e.key==='Enter')unlock()});$('#save').onclick=async()=>{const q=$('#question').value.trim();if(!q)return showToast('請先輸入題目');const clear=state&&q!==state.question?confirm('換題目時，要同時清除上一題的回答嗎？'):false;try{draw(await call('/api/question',{method:'POST',body:JSON.stringify({question:q,clear})}));showToast('題目已更新')}catch(e){showToast(e.message)}};$('#toggle').onclick=async()=>{try{const next=!state.isOpen;await call('/api/open',{method:'POST',body:JSON.stringify({isOpen:next})});state.isOpen=next;draw(state);showToast(next?'已開放學生回答':'已暫停收件')}catch(e){showToast(e.message)}};$('#clear').onclick=async()=>{if(!confirm('確定清除目前全部回答？此動作無法復原。'))return;try{await call('/api/responses',{method:'DELETE'});await refresh();showToast('回答已清空')}catch(e){showToast(e.message)}};async function download(kind){try{const r=await fetch('/api/export.'+kind,{headers:{'x-admin-pin':pin}});if(!r.ok){const d=await r.json();throw new Error(d.error)}const b=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='學生文字雲回答.'+kind;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),500)}catch(e){showToast(e.message)}}$('#csv').onclick=()=>download('csv');$('#xls').onclick=()=>download('xls');const join=location.origin+'/join';$('#qr').src='https://quickchart.io/qr?size=480&margin=2&text='+encodeURIComponent(join);$('#joinUrl').textContent=join;if(pin){$('#pin').value=pin;$('#lock').classList.add('hidden');refresh()}setInterval(()=>{if(pin)refresh()},2500);if(document.modelContext?.registerTool){document.modelContext.registerTool({name:'read_word_cloud',title:'讀取文字雲',description:'讀取目前題目、收件狀態、回答總數與文字統計。',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true,untrustedContentHint:true},execute:async()=>await call('/api/state')});document.modelContext.registerTool({name:'update_word_cloud_question',title:'更新文字雲題目',description:'更新老師端目前題目，並可選擇清除舊回答。',inputSchema:{type:'object',properties:{question:{type:'string'},clearPrevious:{type:'boolean'}},required:['question'],additionalProperties:false},annotations:{readOnlyHint:false,untrustedContentHint:false},execute:async({question,clearPrevious=false})=>{const next=await call('/api/question',{method:'POST',body:JSON.stringify({question,clear:clearPrevious})});draw(next);return{ok:true,question:next.question,total:next.total}}})}
+const $=s=>document.querySelector(s);
+let pin=sessionStorage.getItem('teacherPin')||'';
+let state=null;
+let questionDirty=false;
+let toastTimer;
+const showToast=m=>{
+  const t=$('#toast');
+  t.textContent=m;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>t.classList.remove('show'),2200)
+};
+async function call(url,options={}){
+  options.headers={...(options.headers||{}),'content-type':'application/json','x-admin-pin':pin};
+  const r=await fetch(url,options);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(data.error||'操作失敗');
+  return data
+}
+function draw(data){
+  state=data;
+  const question=$('#question');
+  if(document.activeElement!==question&&!questionDirty)question.value=data.question;
+  $('#count').textContent=data.total+' 份回答';
+  $('#openText').textContent=data.isOpen?'正在收件':'已暫停';
+  $('#statusDot').style.background=data.isOpen?'#38b36a':'#ff735d';
+  $('#toggle').classList.toggle('on',data.isOpen);
+  $('#toggle').setAttribute('aria-pressed',String(data.isOpen));
+  const c=$('#cloud');
+  c.innerHTML='';
+  if(!data.words.length){
+    c.innerHTML='<div class="empty"><span class="empty-icon">✦</span>學生送出回答後，文字會即時出現在這裡。<br>相同回答越多，字會越大。</div>';
+    return
+  }
+  const max=Math.max(...data.words.map(w=>w.count));
+  data.words.forEach((w,i)=>{
+    const el=document.createElement('span');
+    el.className='word';
+    el.textContent=w.answer;
+    el.title=w.count+' 人回答';
+    el.style.fontSize=(20+Math.sqrt(w.count/max)*42)+'px';
+    el.style.animationDelay=Math.min(i*.025,.4)+'s';
+    c.appendChild(el)
+  })
+}
+async function refresh(){try{draw(await call('/api/state'))}catch(e){showToast(e.message)}}
+async function unlock(){
+  pin=$('#pin').value.trim();
+  try{
+    await call('/api/state');
+    await call('/api/open',{method:'POST',body:JSON.stringify({isOpen:true})});
+    sessionStorage.setItem('teacherPin',pin);
+    $('#lock').classList.add('hidden');
+    await refresh()
+  }catch(e){showToast('密碼不正確，請再試一次')}
+}
+$('#unlock').onclick=unlock;
+$('#pin').addEventListener('keydown',e=>{if(e.key==='Enter')unlock()});
+$('#question').addEventListener('input',()=>{questionDirty=true});
+$('#save').onclick=async()=>{
+  const q=$('#question').value.trim();
+  if(!q)return showToast('請先輸入題目');
+  const clear=state&&q!==state.question?confirm('換題目時，要同時清除上一題的回答嗎？'):false;
+  try{
+    const next=await call('/api/question',{method:'POST',body:JSON.stringify({question:q,clear})});
+    questionDirty=false;
+    $('#question').value=next.question;
+    draw(next);
+    showToast('題目已更新')
+  }catch(e){showToast(e.message)}
+};
+$('#toggle').onclick=async()=>{
+  try{
+    const next=!state.isOpen;
+    await call('/api/open',{method:'POST',body:JSON.stringify({isOpen:next})});
+    state.isOpen=next;
+    draw(state);
+    showToast(next?'已開放學生回答':'已暫停收件')
+  }catch(e){showToast(e.message)}
+};
+$('#clear').onclick=async()=>{
+  if(!confirm('確定清除目前全部回答？此動作無法復原。'))return;
+  try{await call('/api/responses',{method:'DELETE'});await refresh();showToast('回答已清空')}catch(e){showToast(e.message)}
+};
+async function download(kind){
+  try{
+    const r=await fetch('/api/export.'+kind,{headers:{'x-admin-pin':pin}});
+    if(!r.ok){const d=await r.json();throw new Error(d.error)}
+    const b=await r.blob();
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(b);
+    a.download='學生文字雲回答.'+kind;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),500)
+  }catch(e){showToast(e.message)}
+}
+$('#csv').onclick=()=>download('csv');
+$('#xls').onclick=()=>download('xls');
+const join=location.origin+'/join';
+$('#qr').src='https://quickchart.io/qr?size=480&margin=2&text='+encodeURIComponent(join);
+$('#joinUrl').textContent=join;
+if(pin){$('#pin').value=pin;$('#lock').classList.add('hidden');refresh()}
+setInterval(()=>{if(pin)refresh()},2500);
+if(document.modelContext?.registerTool){
+  document.modelContext.registerTool({name:'read_word_cloud',title:'讀取文字雲',description:'讀取目前題目、收件狀態、回答總數與文字統計。',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true,untrustedContentHint:true},execute:async()=>await call('/api/state')});
+  document.modelContext.registerTool({name:'update_word_cloud_question',title:'更新文字雲題目',description:'更新老師端目前題目，並可選擇清除舊回答。',inputSchema:{type:'object',properties:{question:{type:'string'},clearPrevious:{type:'boolean'}},required:['question'],additionalProperties:false},annotations:{readOnlyHint:false,untrustedContentHint:false},execute:async({question,clearPrevious=false})=>{const next=await call('/api/question',{method:'POST',body:JSON.stringify({question,clear:clearPrevious})});draw(next);return{ok:true,question:next.question,total:next.total}}})
+}
 `;
 
 const studentScript = String.raw`
